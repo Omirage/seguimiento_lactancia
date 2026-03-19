@@ -1,0 +1,1144 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
+  <meta name="apple-mobile-web-app-title" content="Lactancia"/>
+  <meta name="theme-color" content="#ffffff"/>
+  <title>Seguimiento de Lactancia</title>
+  <link rel="manifest" href="manifest.json"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <!-- Firebase SDK -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, addDoc, query, orderBy, serverTimestamp, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+
+    // ── FIREBASE CONFIG ─────────────────────────────────────────────
+    // Replace with your project config from console.firebase.google.com
+    const firebaseConfig = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT.firebaseapp.com",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_PROJECT.appspot.com",
+      messagingSenderId: "YOUR_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+    // ───────────────────────────────────────────────────────────────
+
+    let db, auth, currentUser, groupId;
+    let unsubFeeds = null, unsubGroup = null;
+
+    try {
+      const app = initializeApp(firebaseConfig);
+      db = getFirestore(app);
+      auth = getAuth(app);
+
+      onAuthStateChanged(auth, async user => {
+        if (!user) return;
+        currentUser = user;
+        window._uid = user.uid;
+        const userSnap = await getDoc(doc(db, "users", user.uid));
+        if (userSnap.exists()) {
+          groupId = userSnap.data().groupId;
+          window._groupId = groupId;
+          subscribeGroup();
+        }
+        window._firebaseReady = true;
+        document.dispatchEvent(new Event('firebase-ready'));
+      });
+
+      signInAnonymously(auth).catch(() => triggerLocalMode());
+
+    } catch(e) { triggerLocalMode(); }
+
+    function subscribeGroup() {
+      if (!groupId) return;
+      if (unsubGroup) unsubGroup();
+      unsubGroup = onSnapshot(doc(db, "groups", groupId), snap => {
+        if (snap.exists()) document.dispatchEvent(new CustomEvent('group-updated', { detail: snap.data() }));
+      });
+      if (unsubFeeds) unsubFeeds();
+      const q = query(collection(db, "groups", groupId, "feeds"), orderBy("createdAt", "desc"));
+      unsubFeeds = onSnapshot(q, snap => {
+        const feeds = snap.docs.map(d => {
+          const data = d.data();
+          return {
+            id: d.id,
+            ...data,
+            start: data.start?.toDate ? data.start.toDate().toISOString() : data.start,
+            end: data.end?.toDate ? data.end.toDate().toISOString() : data.end,
+          };
+        }).filter(f => f.start && f.end);
+        window._liveFeeds = feeds;
+        document.dispatchEvent(new CustomEvent('feeds-updated', { detail: feeds }));
+      });
+    }
+
+    window._createGroup = async function(profileData) {
+      const groupRef = await addDoc(collection(db, "groups"), { createdAt: serverTimestamp(), members: [profileData] });
+      groupId = groupRef.id;
+      window._groupId = groupId;
+      await setDoc(doc(db, "users", currentUser.uid), { groupId, role: profileData.role, name: profileData.nombre, uid: currentUser.uid });
+      subscribeGroup();
+      return groupId;
+    };
+
+    window._joinGroup = async function(code, myProfile) {
+      const groupRef = doc(db, "groups", code);
+      const snap = await getDoc(groupRef);
+      if (!snap.exists()) throw new Error("Código inválido");
+      const members = [...(snap.data().members || []), myProfile];
+      await updateDoc(groupRef, { members });
+      groupId = code; window._groupId = code;
+      await setDoc(doc(db, "users", currentUser.uid), { groupId: code, role: myProfile.role, name: myProfile.nombre, uid: currentUser.uid });
+      subscribeGroup();
+      return code;
+    };
+
+    window._saveFeed = async function(feed) {
+      if (!groupId) return;
+      return addDoc(collection(db, "groups", groupId, "feeds"), { ...feed, savedBy: currentUser.uid, createdAt: serverTimestamp() });
+    };
+
+    function triggerLocalMode() {
+      window._firebaseReady = true;
+      document.dispatchEvent(new Event('firebase-ready'));
+    }
+  </script>
+
+  <style>
+    :root {
+      --l50:  #faf7ff;
+      --l100: #f2ebff;
+      --l200: #e0cfff;
+      --l300: #c4a3ff;
+      --l400: #a67cf8;
+      --l500: #8b5cf6;
+      --l600: #7c3aed;
+      --l700: #6d28d9;
+      --txt:  #1e0e40;
+      --txt2: #5b4880;
+      --txt3: #9480b8;
+      --sh-btn:    0 8px 28px rgba(124,58,237,0.42), 0 3px 8px rgba(124,58,237,0.24);
+      --sh-btn-sm: 0 4px 14px rgba(124,58,237,0.30), 0 1px 4px rgba(124,58,237,0.18);
+      --sh-card:   0 2px 14px rgba(107,63,200,0.09), 0 1px 3px rgba(107,63,200,0.06);
+      --sh-ghost:  0 3px 12px rgba(107,63,200,0.14), 0 1px 3px rgba(107,63,200,0.08);
+      --f: 'Poppins', sans-serif;
+      --r-sm: 14px; --r-md: 20px; --r-lg: 26px; --r-full: 9999px;
+    }
+
+    *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+
+    html, body {
+      height: 100%; font-family: var(--f);
+      background: #fff; color: var(--txt);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* SCREENS */
+    .screen {
+      display: none; flex-direction: column;
+      min-height: 100vh; min-height: -webkit-fill-available;
+      padding-top: env(safe-area-inset-top,0);
+      padding-bottom: env(safe-area-inset-bottom,0);
+    }
+    .screen.active { display: flex; }
+
+    /* BUTTONS */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      gap: 9px; height: 54px; padding: 0 28px;
+      border-radius: var(--r-full);
+      font-family: var(--f); font-size: 15px; font-weight: 600;
+      letter-spacing: 0.15px; cursor: pointer; border: none;
+      transition: transform .15s, box-shadow .15s;
+      -webkit-appearance: none; width: 100%;
+    }
+    .btn-primary {
+      background: linear-gradient(138deg, var(--l500) 0%, var(--l700) 100%);
+      color: #fff; box-shadow: var(--sh-btn);
+    }
+    .btn-primary:active { transform: scale(0.96); box-shadow: var(--sh-btn-sm); }
+    .btn-ghost {
+      background: #fff; color: var(--l600);
+      border: 2px solid var(--l200); box-shadow: var(--sh-ghost);
+    }
+    .btn-ghost:active { background: var(--l50); transform: scale(0.96); }
+    .btn-icon {
+      width: 46px; height: 46px; padding: 0;
+      border-radius: 14px; background: #fff;
+      border: 1.5px solid var(--l100);
+      box-shadow: var(--sh-ghost); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; transition: transform .15s;
+    }
+    .btn-icon:active { transform: scale(0.93); }
+
+    /* FORM */
+    .field { margin-bottom: 18px; }
+    .field label {
+      display: block; font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .8px;
+      color: var(--txt3); margin-bottom: 7px;
+    }
+    .field input, .field select {
+      width: 100%; height: 50px; padding: 0 16px;
+      border: 2px solid var(--l100); border-radius: var(--r-sm);
+      font-family: var(--f); font-size: 15px; color: var(--txt);
+      background: var(--l50); outline: none;
+      transition: border-color .2s, box-shadow .2s, background .2s;
+      -webkit-appearance: none; appearance: none;
+    }
+    .field input:focus, .field select:focus {
+      border-color: var(--l400); background: #fff;
+      box-shadow: 0 0 0 4px rgba(139,92,246,.11);
+    }
+    .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    textarea {
+      width: 100%; min-height: 88px; padding: 14px 16px;
+      border: 2px solid var(--l100); border-radius: var(--r-sm);
+      font-family: var(--f); font-size: 14px; color: var(--txt);
+      background: var(--l50); resize: none; outline: none;
+      transition: border-color .2s;
+    }
+    textarea:focus { border-color: var(--l400); background: #fff; }
+
+    /* PROGRESS */
+    .pdots { display: flex; gap: 8px; justify-content: center; margin-bottom: 36px; }
+    .pd { width: 8px; height: 8px; border-radius: 50%; background: var(--l200); transition: all .3s; }
+    .pd.cur { background: var(--l500); width: 24px; border-radius: 4px; }
+    .pd.done { background: var(--l400); }
+
+    /* ONBOARDING */
+    #screen-onboarding {
+      background: linear-gradient(165deg, #faf7ff 0%, #f0e8ff 100%);
+      padding: 0;
+    }
+    .onb-inner {
+      flex:1; display:flex; flex-direction:column;
+      padding: 52px 28px 40px; max-width: 440px; margin: 0 auto; width: 100%;
+    }
+    .onb-step { display: none; flex-direction: column; flex: 1; animation: fadeIn .25s ease; }
+    .onb-step.active { display: flex; }
+    @keyframes fadeIn { from { opacity:.4; transform:translateY(8px); } to { opacity:1; transform:none; } }
+
+    .role-pill {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: #fff; border: 2px solid var(--l200);
+      border-radius: var(--r-full); padding: 7px 16px 7px 9px;
+      font-size: 13px; font-weight: 600; color: var(--l600);
+      box-shadow: var(--sh-ghost); margin-bottom: 20px; width: fit-content;
+    }
+    .role-ico { width: 30px; height: 30px; background: var(--l100); border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+
+    .onb-title { font-size: 26px; font-weight: 700; color: var(--txt); margin-bottom: 8px; line-height: 1.2; }
+    .onb-sub   { font-size: 14px; font-weight: 400; color: var(--txt3); margin-bottom: 32px; line-height: 1.5; }
+    .onb-actions { margin-top: auto; display: flex; flex-direction: column; gap: 12px; padding-top: 24px; }
+
+    /* INVITE BOX */
+    .invite-box {
+      background: #fff; border: 2px solid var(--l200);
+      border-radius: var(--r-md); padding: 20px;
+      box-shadow: var(--sh-card); margin-bottom: 20px;
+    }
+    .code-display {
+      font-size: 26px; font-weight: 700; letter-spacing: 5px;
+      color: var(--l600); text-align: center; padding: 14px 0 6px;
+    }
+    .code-hint { font-size: 12px; font-weight: 400; color: var(--txt3); text-align: center; }
+
+    /* JOIN */
+    #screen-join {
+      background: linear-gradient(165deg, #faf7ff 0%, #f0e8ff 100%);
+      padding: 0;
+    }
+    .join-inner {
+      flex: 1; display: flex; flex-direction: column;
+      padding: 52px 28px 40px; max-width: 440px; margin: 0 auto; width: 100%;
+    }
+
+    /* HOME */
+    #screen-home { background: #fff; }
+    .home-hdr {
+      display: grid; grid-template-columns: 46px 1fr 46px;
+      align-items: center; padding: 20px 20px 0; gap: 10px;
+    }
+    .hdr-center { text-align: center; }
+    .hdr-h1 { font-size: 18px; font-weight: 700; color: var(--txt); }
+    .hdr-h2 { font-size: 13px; font-weight: 500; color: var(--l500); margin-top: 2px; }
+
+    .next-card {
+      margin: 20px 20px 0;
+      background: linear-gradient(138deg, var(--l100) 0%, var(--l200) 100%);
+      border-radius: var(--r-lg); padding: 26px 24px;
+      position: relative; overflow: hidden; box-shadow: var(--sh-card);
+    }
+    .nc-deco { position: absolute; border-radius: 50%; background: rgba(255,255,255,.42); }
+    .nc-d1 { width: 140px; height: 140px; right: -38px; top: -38px; }
+    .nc-d2 { width: 70px; height: 70px; right: 66px; bottom: -28px; }
+    .nc-lbl { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; color: var(--l600); margin-bottom: 8px; }
+    .nc-time { font-size: 46px; font-weight: 700; color: var(--txt); letter-spacing: -2px; line-height: 1; }
+    .nc-since { font-size: 13px; font-weight: 400; color: var(--txt2); margin-top: 6px; }
+
+    .stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin: 14px 20px 0; }
+    .stat {
+      background: var(--l50); border: 1.5px solid var(--l100);
+      border-radius: var(--r-md); padding: 14px 10px; text-align: center;
+      box-shadow: var(--sh-card);
+    }
+    .stat-v { font-size: 22px; font-weight: 700; color: var(--l600); }
+    .stat-l { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: var(--txt3); margin-top: 2px; }
+
+    .members-bar {
+      display: flex; gap: 8px; padding: 14px 20px 0;
+      overflow-x: auto; scrollbar-width: none;
+    }
+    .members-bar::-webkit-scrollbar { display: none; }
+    .mpill {
+      flex-shrink: 0; display: flex; align-items: center; gap: 7px;
+      background: #fff; border: 1.5px solid var(--l100);
+      border-radius: var(--r-full); padding: 6px 14px 6px 8px;
+      box-shadow: var(--sh-card); font-size: 12px; font-weight: 500; color: var(--txt2);
+    }
+    .mavatar {
+      width: 26px; height: 26px; background: var(--l100);
+      border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    }
+
+    .home-btns { padding: 20px 20px 36px; display: flex; flex-direction: column; gap: 12px; flex: 1; }
+    .btn-start-big {
+      height: 64px; font-size: 17px; font-weight: 700;
+      border-radius: var(--r-lg);
+      background: linear-gradient(138deg, var(--l400) 0%, var(--l700) 100%);
+      color: #fff; border: none; cursor: pointer;
+      box-shadow: 0 8px 30px rgba(124,58,237,.44), 0 3px 9px rgba(124,58,237,.25);
+      display: flex; align-items: center; justify-content: center; gap: 12px;
+      transition: transform .15s, box-shadow .15s;
+    }
+    .btn-start-big:active { transform: scale(0.97); box-shadow: var(--sh-btn-sm); }
+    .btn-sec {
+      height: 54px; font-size: 15px; font-weight: 600;
+      border-radius: var(--r-lg); background: #fff; color: var(--l600);
+      border: 2px solid var(--l200); cursor: pointer;
+      box-shadow: 0 4px 18px rgba(124,58,237,.16), 0 1px 4px rgba(124,58,237,.10);
+      display: flex; align-items: center; justify-content: center; gap: 10px;
+      transition: transform .15s;
+    }
+    .btn-sec:active { background: var(--l50); transform: scale(0.97); }
+
+    /* FEED */
+    #screen-feed { background: linear-gradient(180deg, var(--l50) 0%, #fff 44%); align-items: center; }
+    .feed-hdr { width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 20px 20px 0; }
+    .feed-ttl { font-size: 18px; font-weight: 700; color: var(--txt); }
+
+    .timer-wrap { margin: 30px auto 0; }
+    .timer-inner { position: relative; width: 210px; height: 210px; }
+    .timer-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+    .timer-content { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    .timer-digits { font-size: 50px; font-weight: 700; color: var(--txt); letter-spacing: -2px; line-height: 1; }
+    .timer-unit { font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: .8px; color: var(--txt3); margin-top: 4px; }
+
+    .phase-badge {
+      margin: 14px auto 0; display: inline-flex; align-items: center; gap: 7px;
+      background: var(--l100); color: var(--l600); padding: 6px 18px;
+      border-radius: var(--r-full); font-size: 12px; font-weight: 600;
+      border: 1.5px solid var(--l200);
+    }
+
+    .milestones { width: 100%; padding: 20px 20px 0; display: flex; flex-direction: column; gap: 9px; }
+    .ms {
+      display: flex; align-items: center; gap: 12px;
+      padding: 13px 16px; background: #fff;
+      border-radius: var(--r-md); border: 2px solid var(--l100);
+      box-shadow: var(--sh-card); transition: all .3s;
+    }
+    .ms.hit { border-color: var(--l300); background: var(--l50); }
+    .ms-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--l200); flex-shrink: 0; transition: all .3s; }
+    .ms.hit .ms-dot { background: var(--l500); box-shadow: 0 0 0 4px rgba(139,92,246,.2); }
+    .ms-txt { font-size: 13px; font-weight: 500; color: var(--txt2); }
+    .ms.hit .ms-txt { color: var(--l600); }
+    .ms-t { font-size: 12px; font-weight: 500; color: var(--txt3); margin-left: auto; }
+
+    .ext-row { width: 100%; padding: 16px 20px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .btn-ext {
+      height: 48px; font-size: 14px; font-weight: 600;
+      border-radius: var(--r-md); background: #fff; color: var(--l600);
+      border: 2px solid var(--l200); cursor: pointer;
+      box-shadow: 0 4px 14px rgba(124,58,237,.16), 0 1px 3px rgba(124,58,237,.10);
+      display: flex; align-items: center; justify-content: center; gap: 7px;
+      transition: transform .15s;
+    }
+    .btn-ext:active { background: var(--l50); transform: scale(0.96); }
+    .btn-finish {
+      margin: 18px 20px 32px; width: calc(100% - 40px); height: 58px;
+      font-size: 16px; font-weight: 700; border-radius: var(--r-lg);
+      background: linear-gradient(138deg, var(--l400), var(--l700));
+      color: #fff; border: none; cursor: pointer;
+      box-shadow: 0 8px 30px rgba(124,58,237,.44), 0 3px 9px rgba(124,58,237,.25);
+      display: flex; align-items: center; justify-content: center; gap: 10px;
+      transition: transform .15s;
+    }
+    .btn-finish:active { transform: scale(0.97); }
+
+    /* HISTORY / REPORTS pages */
+    #screen-history, #screen-reports, #screen-notifications { background: #fff; }
+    .page-hdr { padding: 20px 20px 0; display: flex; align-items: center; gap: 14px; }
+    .page-ttl { font-size: 22px; font-weight: 700; color: var(--txt); }
+
+    .filter-row { display: flex; gap: 8px; padding: 16px 20px 0; overflow-x: auto; scrollbar-width: none; }
+    .filter-row::-webkit-scrollbar { display: none; }
+    .chip {
+      flex-shrink: 0; padding: 8px 18px; border-radius: var(--r-full);
+      font-family: var(--f); font-size: 13px; font-weight: 600; cursor: pointer;
+      border: 2px solid var(--l200); background: #fff; color: var(--txt2);
+      box-shadow: var(--sh-card); transition: all .2s;
+    }
+    .chip.on { background: var(--l500); color: #fff; border-color: var(--l500); box-shadow: 0 4px 14px rgba(124,58,237,.36); }
+
+    .hist-list { padding: 14px 20px; display: flex; flex-direction: column; gap: 10px; flex: 1; overflow-y: auto; }
+    .hcard {
+      background: #fff; border: 2px solid var(--l100);
+      border-radius: var(--r-md); padding: 16px 18px;
+      box-shadow: var(--sh-card);
+    }
+    .hcard-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .hdate { font-size: 12px; font-weight: 600; color: var(--txt3); text-transform: capitalize; }
+    .dur-badge {
+      background: var(--l100); color: var(--l600);
+      padding: 4px 13px; border-radius: var(--r-full);
+      font-size: 12px; font-weight: 700; border: 1.5px solid var(--l200);
+    }
+    .htimes { display: flex; align-items: center; gap: 14px; }
+    .htb {}
+    .htv { font-size: 20px; font-weight: 700; color: var(--txt); }
+    .htl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: var(--txt3); }
+    .htsep { font-size: 16px; color: var(--l300); }
+    .hobs { margin-top: 10px; font-size: 13px; color: var(--txt2); font-style: italic; padding-top: 10px; border-top: 1px solid var(--l50); }
+
+    /* REPORTS */
+    .report-inner { padding: 14px 20px 40px; overflow-y: auto; flex: 1; }
+    .sec-lbl { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; color: var(--txt3); margin: 22px 0 12px; }
+    .insight-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+    .ins {
+      background: var(--l50); border: 1.5px solid var(--l100);
+      border-radius: var(--r-md); padding: 18px 16px; box-shadow: var(--sh-card);
+    }
+    .ins-v { font-size: 30px; font-weight: 700; color: var(--l600); line-height: 1; }
+    .ins-u { font-size: 13px; color: var(--txt3); }
+    .ins-l { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: var(--txt3); margin-top: 5px; }
+    .chart-card {
+      background: #fff; border: 2px solid var(--l100);
+      border-radius: var(--r-md); padding: 18px; box-shadow: var(--sh-card); margin-bottom: 14px;
+    }
+
+    /* NOTIF SETTINGS */
+    .notif-inner { padding: 20px; flex: 1; overflow-y: auto; }
+    .tog-row { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; border-bottom: 1px solid var(--l50); }
+    .tinfo { flex: 1; padding-right: 16px; }
+    .tlbl { font-size: 15px; font-weight: 600; color: var(--txt); }
+    .tsub { font-size: 12px; color: var(--txt3); margin-top: 2px; }
+    .toggle { position: relative; width: 50px; height: 28px; flex-shrink: 0; }
+    .toggle input { opacity:0; width:0; height:0; }
+    .tslider { position: absolute; inset:0; background: var(--l200); border-radius: 14px; cursor:pointer; transition: background .3s; }
+    .tslider::before { content:''; position:absolute; width:22px; height:22px; left:3px; top:3px; background:#fff; border-radius:50%; transition:transform .3s; box-shadow:0 1px 4px rgba(0,0,0,.18); }
+    .toggle input:checked + .tslider { background: var(--l500); }
+    .toggle input:checked + .tslider::before { transform: translateX(22px); }
+
+    .int-row { padding: 22px 0 0; }
+    .int-lbl { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; color: var(--txt3); margin-bottom: 10px; }
+    .int-opts { display: flex; gap: 9px; }
+    .int-btn {
+      flex: 1; height: 44px; border-radius: var(--r-sm);
+      font-family: var(--f); font-size: 14px; font-weight: 600;
+      cursor: pointer; border: 2px solid var(--l200); background: #fff;
+      color: var(--txt2); box-shadow: var(--sh-card); transition: all .2s;
+    }
+    .int-btn.sel { background: var(--l100); border-color: var(--l400); color: var(--l700); box-shadow: 0 3px 10px rgba(124,58,237,.2); }
+
+    .ios-box {
+      background: var(--l50); border: 1.5px solid var(--l200);
+      border-radius: var(--r-md); padding: 16px; margin-top: 24px;
+      display: flex; gap: 12px; align-items: flex-start;
+    }
+    .ios-txt { font-size: 13px; color: var(--txt2); line-height: 1.6; }
+    .ios-txt strong { color: var(--l600); font-weight: 600; }
+
+    /* MODAL */
+    .overlay { display:none; position:fixed; inset:0; background:rgba(30,14,64,.5); backdrop-filter:blur(8px); z-index:100; align-items:flex-end; justify-content:center; padding-bottom: env(safe-area-inset-bottom,0); }
+    .overlay.open { display:flex; }
+    .sheet {
+      background: #fff; border-radius: 28px 28px 0 0;
+      padding: 28px 24px 40px; width:100%; max-width:480px;
+      box-shadow: 0 -8px 40px rgba(107,63,200,.22);
+      animation: su .3s cubic-bezier(.22,.68,0,1.15);
+    }
+    @keyframes su { from { transform:translateY(100%); } to { transform:translateY(0); } }
+    .sheet-handle { width:40px; height:4px; background:var(--l200); border-radius:4px; margin:0 auto 24px; }
+    .sheet-ttl { font-size:22px; font-weight:700; color:var(--txt); margin-bottom:4px; }
+    .sheet-sub { font-size:13px; color:var(--txt3); margin-bottom:20px; }
+    .msum { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:20px; }
+    .msi { text-align:center; padding:12px 8px; background:var(--l50); border-radius:var(--r-sm); }
+    .msv { font-size:20px; font-weight:700; color:var(--l600); }
+    .msl { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.5px; color:var(--txt3); margin-top:2px; }
+    .sheet-btns { display:flex; gap:10px; margin-top:18px; }
+
+    /* BANNER */
+    .notif-banner {
+      position:fixed; top:calc(env(safe-area-inset-top,12px) + 12px);
+      left:14px; right:14px; background:#fff;
+      border:2px solid var(--l200); border-radius:var(--r-md);
+      padding:16px 18px;
+      box-shadow: 0 8px 32px rgba(107,63,200,.24), 0 2px 8px rgba(107,63,200,.14);
+      z-index:200; display:none;
+      animation: bdn .35s cubic-bezier(.22,.68,0,1.15);
+    }
+    @keyframes bdn { from { transform:translateY(-120%); opacity:0; } to { transform:translateY(0); opacity:1; } }
+    .notif-banner.show { display:block; }
+    .nb-t { font-size:14px; font-weight:700; color:var(--txt); margin-bottom:3px; }
+    .nb-b { font-size:13px; color:var(--txt2); margin-bottom:12px; }
+    .nb-acts { display:flex; gap:9px; }
+    .nb-btn {
+      flex:1; height:38px; border-radius:var(--r-sm);
+      font-family:var(--f); font-size:13px; font-weight:600;
+      cursor:pointer; border:2px solid var(--l200); background:#fff; color:var(--l600);
+      box-shadow:var(--sh-card); transition:transform .15s;
+    }
+    .nb-btn.p {
+      background:linear-gradient(138deg,var(--l500),var(--l700));
+      color:#fff; border-color:transparent;
+      box-shadow:0 4px 14px rgba(124,58,237,.38);
+    }
+    .nb-btn:active { transform:scale(0.96); }
+
+    /* TOAST */
+    .toast {
+      position:fixed; bottom:calc(env(safe-area-inset-bottom,16px) + 16px);
+      left:50%; transform:translateX(-50%) translateY(80px);
+      background:var(--txt); color:#fff; padding:12px 24px;
+      border-radius:var(--r-full); font-size:14px; font-weight:500;
+      white-space:nowrap; transition:transform .32s cubic-bezier(.22,.68,0,1.15);
+      z-index:300; box-shadow:0 6px 24px rgba(30,14,64,.32);
+    }
+    .toast.show { transform:translateX(-50%) translateY(0); }
+
+    /* EMPTY */
+    .empty { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:40px; text-align:center; }
+    .empty-t { font-size:20px; font-weight:700; color:var(--txt2); margin:14px 0 8px; }
+    .empty-s { font-size:14px; color:var(--txt3); }
+
+    /* EXPORT */
+    .export-btn {
+      display:flex; align-items:center; justify-content:center; gap:10px;
+      width:100%; height:52px; margin-top:24px;
+      border-radius:var(--r-lg); background:#fff; color:var(--l600);
+      border:2px solid var(--l200); font-family:var(--f); font-size:15px; font-weight:600;
+      cursor:pointer; box-shadow:0 4px 16px rgba(124,58,237,.15), 0 1px 4px rgba(124,58,237,.09);
+    }
+
+    /* LOADING */
+    #screen-loading { align-items:center; justify-content:center; background:linear-gradient(165deg,#faf7ff,#f0e8ff); }
+    .ring { width:48px; height:48px; border:4px solid var(--l200); border-top-color:var(--l500); border-radius:50%; animation:spin .9s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .ring-txt { margin-top:16px; font-size:14px; font-weight:500; color:var(--txt3); }
+  </style>
+</head>
+<body>
+
+<!-- LOADING -->
+<div class="screen active" id="screen-loading">
+  <div class="ring"></div>
+  <div class="ring-txt">Conectando...</div>
+</div>
+
+<!-- ONBOARDING -->
+<div class="screen" id="screen-onboarding">
+  <div class="onb-inner">
+    <div class="pdots" id="pdots"></div>
+
+    <!-- Step 0 -->
+    <div class="onb-step active" id="s0">
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center;">
+        <div style="margin-bottom:28px;">
+          <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
+            <rect width="64" height="64" rx="20" fill="var(--l100)"/>
+            <path d="M32 48C32 48 16 38 16 26a10 10 0 0120 0 10 10 0 0120 0C56 38 32 48 32 48z" fill="var(--l500)" opacity=".25"/>
+            <path d="M32 46C32 46 18 37 18 27a8 8 0 0116 0 8 8 0 0116 0C50 37 32 46 32 46z" fill="var(--l500)"/>
+          </svg>
+        </div>
+        <h1 class="onb-title" style="font-size:32px; line-height:1.15;">Seguimiento<br/>de <span style="color:var(--l500)">Lactancia</span></h1>
+        <p class="onb-sub" style="font-size:15px; margin-top:12px; margin-bottom:0;">Tu compañera familiar en cada toma. Datos sincronizados en tiempo real para toda la familia.</p>
+      </div>
+      <div class="onb-actions">
+        <button class="btn btn-primary" onclick="nextStep()">
+          Comenzar registro
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </button>
+        <button class="btn btn-ghost" onclick="goTo('join')">Ya tengo un grupo familiar</button>
+      </div>
+    </div>
+
+    <!-- Step 1: Mamá -->
+    <div class="onb-step" id="s1">
+      <div class="role-pill">
+        <div class="role-ico">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--l600)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/><path d="M12 15v5M9.5 18h5"/></svg>
+        </div>
+        Mamá
+      </div>
+      <h2 class="onb-title">Datos de la mamá</h2>
+      <p class="onb-sub">Información para personalizar tu perfil</p>
+      <div class="field"><label>Nombre completo</label><input type="text" id="mama-nombre" placeholder="Nombre de la mamá" autocomplete="name"/></div>
+      <div class="field"><label>Fecha de nacimiento</label><input type="date" id="mama-fecha"/></div>
+      <div class="onb-actions">
+        <button class="btn btn-primary" onclick="nextStep()">Continuar <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg></button>
+        <button class="btn btn-ghost" onclick="prevStep()">Volver</button>
+      </div>
+    </div>
+
+    <!-- Step 2: Papá -->
+    <div class="onb-step" id="s2">
+      <div class="role-pill">
+        <div class="role-ico">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--l600)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+        </div>
+        Papá
+      </div>
+      <h2 class="onb-title">Datos del papá</h2>
+      <p class="onb-sub">Podrá unirse con el código del grupo</p>
+      <div class="field"><label>Nombre completo</label><input type="text" id="papa-nombre" placeholder="Nombre del papá" autocomplete="name"/></div>
+      <div class="field"><label>Fecha de nacimiento</label><input type="date" id="papa-fecha"/></div>
+      <div class="onb-actions">
+        <button class="btn btn-primary" onclick="nextStep()">Continuar <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg></button>
+        <button class="btn btn-ghost" onclick="prevStep()">Volver</button>
+      </div>
+    </div>
+
+    <!-- Step 3: Bebé -->
+    <div class="onb-step" id="s3">
+      <div class="role-pill">
+        <div class="role-ico">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--l600)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="9" r="4"/><path d="M4 21v-1a8 8 0 0116 0v1"/></svg>
+        </div>
+        Bebé
+      </div>
+      <h2 class="onb-title">Datos del bebé</h2>
+      <p class="onb-sub">El protagonista de cada toma</p>
+      <div class="field"><label>Nombre</label><input type="text" id="bebe-nombre" placeholder="Nombre del bebé" autocomplete="name"/></div>
+      <div class="field-row">
+        <div class="field"><label>Género</label>
+          <select id="bebe-genero">
+            <option value="">Seleccionar</option>
+            <option value="niña">Niña</option>
+            <option value="niño">Niño</option>
+            <option value="otro">Otro</option>
+          </select>
+        </div>
+        <div class="field"><label>Nacimiento</label><input type="date" id="bebe-fecha"/></div>
+      </div>
+      <div class="onb-actions">
+        <button class="btn btn-primary" onclick="finishOnb()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          Crear grupo familiar
+        </button>
+        <button class="btn btn-ghost" onclick="prevStep()">Volver</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- JOIN GROUP -->
+<div class="screen" id="screen-join">
+  <div class="join-inner">
+    <button class="btn-icon" style="margin-bottom:28px;" onclick="goTo('onboarding')">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--l600)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </button>
+    <h2 style="font-size:26px;font-weight:700;color:var(--txt);margin-bottom:8px;">Unirse al grupo</h2>
+    <p style="font-size:14px;color:var(--txt3);margin-bottom:28px;">Ingresá el código que te compartió la mamá</p>
+    <div class="field"><label>Tu nombre</label><input type="text" id="join-nombre" placeholder="Tu nombre completo" autocomplete="name"/></div>
+    <div class="field"><label>Tu rol</label>
+      <select id="join-rol">
+        <option value="papa">Papá</option>
+        <option value="abuela">Abuela</option>
+        <option value="abuelo">Abuelo</option>
+        <option value="otro">Otro familiar</option>
+      </select>
+    </div>
+    <div class="field"><label>Código de grupo</label><input type="text" id="join-code" placeholder="Código del grupo" autocomplete="off" style="text-transform:uppercase;letter-spacing:4px;font-weight:700;"/></div>
+    <button class="btn btn-primary" style="margin-top:4px;" onclick="joinGrp()">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+      Unirse al grupo
+    </button>
+  </div>
+</div>
+
+<!-- HOME -->
+<div class="screen" id="screen-home">
+  <div class="home-hdr">
+    <button class="btn-icon" onclick="goTo('notifications')">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--l600)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+    </button>
+    <div class="hdr-center">
+      <div class="hdr-h1">Registro de Tomas</div>
+      <div class="hdr-h2" id="home-baby">—</div>
+    </div>
+    <button class="btn-icon" onclick="goTo('history')">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--l600)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+    </button>
+  </div>
+
+  <div class="members-bar" id="members-bar"></div>
+
+  <div class="next-card">
+    <div class="nc-deco nc-d1"></div>
+    <div class="nc-deco nc-d2"></div>
+    <div class="nc-lbl">Próxima toma estimada</div>
+    <div class="nc-time" id="nc-time">—</div>
+    <div class="nc-since" id="nc-since">Sin registros aún</div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="stat-v" id="s-today">0</div><div class="stat-l">Hoy</div></div>
+    <div class="stat"><div class="stat-v" id="s-avg">—</div><div class="stat-l">Prom min</div></div>
+    <div class="stat"><div class="stat-v" id="s-total">0</div><div class="stat-l">Total</div></div>
+  </div>
+
+  <div class="home-btns">
+    <button class="btn-start-big" onclick="startFeed()">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+      Iniciar Registro
+    </button>
+    <button class="btn-sec" onclick="goTo('reports')">
+      <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+      Informe de Registros
+    </button>
+  </div>
+</div>
+
+<!-- ACTIVE FEED -->
+<div class="screen" id="screen-feed">
+  <div class="feed-hdr">
+    <button class="btn-icon" onclick="confirmStop()">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--l600)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </button>
+    <div class="feed-ttl">Toma en curso</div>
+    <div style="width:46px;"></div>
+  </div>
+
+  <div class="timer-wrap">
+    <div class="timer-inner">
+      <svg class="timer-svg" viewBox="0 0 210 210">
+        <circle cx="105" cy="105" r="90" fill="none" stroke="var(--l100)" stroke-width="10"/>
+        <circle id="t-arc" cx="105" cy="105" r="90" fill="none" stroke="var(--l400)" stroke-width="10"
+          stroke-linecap="round" stroke-dasharray="565.5" stroke-dashoffset="565.5"
+          transform="rotate(-90 105 105)" style="transition:stroke-dashoffset 1s linear;"/>
+      </svg>
+      <div class="timer-content">
+        <div class="timer-digits" id="t-digits">00:00</div>
+        <div class="timer-unit">en curso</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="text-align:center;margin-top:14px;">
+    <span class="phase-badge" id="t-phase">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      Iniciando...
+    </span>
+  </div>
+
+  <div class="milestones">
+    <div class="ms" id="m15"><div class="ms-dot"></div><div class="ms-txt">Mínimo recomendado</div><div class="ms-t">15 min</div></div>
+    <div class="ms" id="me1"><div class="ms-dot"></div><div class="ms-txt">Primera extensión</div><div class="ms-t" id="me1-t">— min</div></div>
+    <div class="ms" id="me2"><div class="ms-dot"></div><div class="ms-txt">Segunda extensión</div><div class="ms-t" id="me2-t">— min</div></div>
+  </div>
+
+  <div class="ext-row">
+    <button class="btn-ext" onclick="extendFeed(5)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+      5 min
+    </button>
+    <button class="btn-ext" onclick="extendFeed(10)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+      10 min
+    </button>
+  </div>
+
+  <button class="btn-finish" onclick="openFinish()">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+    Finalizar Toma
+  </button>
+</div>
+
+<!-- HISTORY -->
+<div class="screen" id="screen-history">
+  <div class="page-hdr">
+    <button class="btn-icon" onclick="goBack()">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--l600)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </button>
+    <div class="page-ttl">Historial</div>
+  </div>
+  <div class="filter-row">
+    <div class="chip on" onclick="flt('all',this)">Todas</div>
+    <div class="chip" onclick="flt('today',this)">Hoy</div>
+    <div class="chip" onclick="flt('week',this)">Esta semana</div>
+    <div class="chip" onclick="flt('month',this)">Este mes</div>
+  </div>
+  <div class="hist-list" id="hist-list"></div>
+  <div style="padding:0 20px 36px;">
+    <button class="export-btn" onclick="exportCSV()">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Exportar historial (.csv)
+    </button>
+  </div>
+</div>
+
+<!-- REPORTS -->
+<div class="screen" id="screen-reports">
+  <div class="page-hdr">
+    <button class="btn-icon" onclick="goBack()">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--l600)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </button>
+    <div class="page-ttl">Informes</div>
+  </div>
+  <div class="report-inner" id="report-inner"></div>
+</div>
+
+<!-- NOTIFICATIONS -->
+<div class="screen" id="screen-notifications">
+  <div class="page-hdr">
+    <button class="btn-icon" onclick="goBack()">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--l600)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </button>
+    <div class="page-ttl">Notificaciones</div>
+  </div>
+  <div class="notif-inner">
+    <div class="tog-row">
+      <div class="tinfo"><div class="tlbl">Activar notificaciones</div><div class="tsub">Alertas para todos los miembros del grupo</div></div>
+      <label class="toggle"><input type="checkbox" id="tog-notif" onchange="toggleNotif(this)"/><span class="tslider"></span></label>
+    </div>
+    <div class="tog-row">
+      <div class="tinfo"><div class="tlbl">Alerta de inicio</div><div class="tsub">Botones: Recordar 10 min · Iniciar toma</div></div>
+      <label class="toggle"><input type="checkbox" id="tog-start" checked/><span class="tslider"></span></label>
+    </div>
+    <div class="tog-row">
+      <div class="tinfo"><div class="tlbl">Alerta de fin</div><div class="tsub">Botones: Extender 10 min · Finalizar</div></div>
+      <label class="toggle"><input type="checkbox" id="tog-end" checked/><span class="tslider"></span></label>
+    </div>
+    <div class="int-row">
+      <div class="int-lbl">Intervalo entre tomas</div>
+      <div class="int-opts" id="int-opts">
+        <button class="int-btn" onclick="setInt(2,this)">2 h</button>
+        <button class="int-btn sel" onclick="setInt(3,this)">3 h</button>
+        <button class="int-btn" onclick="setInt(4,this)">4 h</button>
+      </div>
+    </div>
+    <div style="margin-top:28px;">
+      <div class="int-lbl" style="margin-bottom:10px;">Código de grupo familiar</div>
+      <div class="invite-box">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:var(--txt3);text-align:center;margin-bottom:4px;">Compartí este código</div>
+        <div class="code-display" id="group-code">—</div>
+        <div class="code-hint">Los demás miembros pueden unirse desde la app</div>
+        <button class="btn btn-ghost" style="margin-top:14px;height:44px;font-size:14px;" onclick="copyCode()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          Copiar código
+        </button>
+      </div>
+    </div>
+    <div class="ios-box">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--l500)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;margin-top:2px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      <div class="ios-txt"><strong>iOS:</strong> Para notificaciones del sistema, ir a Safari → Compartir → <strong>"Añadir a pantalla de inicio"</strong>. Requiere iOS 16.4+.</div>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL FINALIZAR -->
+<div class="overlay" id="modal-finish">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-ttl">Finalizar toma</div>
+    <div class="sheet-sub">Guardá el resumen de esta toma</div>
+    <div class="msum" id="msum"></div>
+    <div class="field"><label>Observaciones (opcional)</label><textarea id="obs" placeholder="Ej: Buena succión, bebé tranquila..."></textarea></div>
+    <div class="sheet-btns">
+      <button class="btn btn-ghost" style="flex:1;width:auto;" onclick="closeFinish()">Cancelar</button>
+      <button class="btn btn-primary" style="flex:2;width:auto;" onclick="saveFeed()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        Guardar
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- BANNER -->
+<div class="notif-banner" id="notif-banner">
+  <div class="nb-t" id="nb-t"></div>
+  <div class="nb-b" id="nb-b"></div>
+  <div class="nb-acts" id="nb-acts"></div>
+</div>
+
+<!-- TOAST -->
+<div class="toast" id="toast"></div>
+
+<script>
+const A = {
+  step: 0, profile: null, feeds: [],
+  cur: null, timerInt: null, ext: [15],
+  interval: 3, notif: false,
+  notifT: null, bannerT: null, toastT: null,
+  navHist: [], notifPerm: 'default'
+};
+
+// ── INIT ──────────────────────────────────────────────────────────
+document.addEventListener('firebase-ready', () => {
+  const lp = localStorage.getItem('lac_p');
+  const lf = JSON.parse(localStorage.getItem('lac_f') || '[]');
+  const pr = JSON.parse(localStorage.getItem('lac_pr') || '{}');
+  A.interval = pr.interval || 3;
+  A.notif = pr.notif || false;
+  A.feeds = lf;
+  if (lp) {
+    A.profile = JSON.parse(lp);
+    const gid = window._groupId;
+    document.getElementById('group-code').textContent = gid ? gid.slice(-8).toUpperCase() : '—';
+    goTo('home');
+    updateHome();
+  } else {
+    goTo('onboarding');
+    buildDots();
+  }
+  document.getElementById('screen-loading').classList.remove('active');
+});
+
+document.addEventListener('feeds-updated', e => {
+  A.feeds = e.detail || [];
+  localStorage.setItem('lac_f', JSON.stringify(A.feeds));
+  updateHome();
+  if (document.getElementById('screen-history').classList.contains('active')) renderHist('all');
+  if (document.getElementById('screen-reports').classList.contains('active')) renderReports();
+});
+
+document.addEventListener('group-updated', e => {
+  if (e.detail?.members) renderMembers(e.detail.members);
+});
+
+// Local fallback
+setTimeout(() => {
+  if (!window._firebaseReady) {
+    window._createGroup = async (p) => { localStorage.setItem('lac_p', JSON.stringify(p)); const id='L-'+Math.random().toString(36).slice(2,7).toUpperCase(); window._groupId=id; return id; };
+    window._joinGroup = async (c,p) => { localStorage.setItem('lac_p', JSON.stringify(p)); window._groupId=c; return c; };
+    window._saveFeed = async (f) => { A.feeds.unshift(f); localStorage.setItem('lac_f', JSON.stringify(A.feeds)); updateHome(); };
+    window._firebaseReady = true;
+    document.dispatchEvent(new Event('firebase-ready'));
+  }
+}, 3500);
+
+// ── NAV ───────────────────────────────────────────────────────────
+function goTo(s) {
+  document.querySelectorAll('.screen').forEach(x => x.classList.remove('active'));
+  document.getElementById('screen-'+s).classList.add('active');
+  A.navHist.push(s);
+  window.scrollTo(0,0);
+  if (s==='history') renderHist('all');
+  if (s==='reports') renderReports();
+  if (s==='notifications') {
+    document.getElementById('tog-notif').checked = A.notif;
+    document.querySelectorAll('.int-btn').forEach(b => b.classList.toggle('sel', b.textContent.trim()===A.interval+' h'));
+  }
+}
+function goBack() {
+  A.navHist.pop();
+  const p = A.navHist.pop() || 'home';
+  goTo(p);
+}
+
+// ── ONBOARDING ────────────────────────────────────────────────────
+function buildDots() {
+  const c = document.getElementById('pdots'); c.innerHTML = '';
+  for (let i=0;i<3;i++) { const d=document.createElement('div'); d.className='pd'+(i===0?' cur':''); c.appendChild(d); }
+}
+function updDots() {
+  document.querySelectorAll('.pd').forEach((d,i) => {
+    d.classList.remove('cur','done');
+    if (i===A.step-1) d.classList.add('cur');
+    else if (i<A.step-1) d.classList.add('done');
+  });
+}
+function nextStep() {
+  if (A.step===0) { A.step=1; document.getElementById('s0').classList.remove('active'); document.getElementById('s1').classList.add('active'); buildDots(); updDots(); return; }
+  if (A.step===1) { if (!document.getElementById('mama-nombre').value.trim()){showToast('Ingresá el nombre de la mamá');return;} A.step=2; document.getElementById('s1').classList.remove('active'); document.getElementById('s2').classList.add('active'); updDots(); return; }
+  if (A.step===2) { A.step=3; document.getElementById('s2').classList.remove('active'); document.getElementById('s3').classList.add('active'); updDots(); }
+}
+function prevStep() {
+  if (A.step===1){A.step=0;document.getElementById('s1').classList.remove('active');document.getElementById('s0').classList.add('active');updDots();return;}
+  if (A.step===2){A.step=1;document.getElementById('s2').classList.remove('active');document.getElementById('s1').classList.add('active');updDots();return;}
+  if (A.step===3){A.step=2;document.getElementById('s3').classList.remove('active');document.getElementById('s2').classList.add('active');updDots();}
+}
+async function finishOnb() {
+  const bn = document.getElementById('bebe-nombre').value.trim();
+  if (!bn){showToast('Ingresá el nombre del bebé');return;}
+  const p = {
+    mama:{nombre:document.getElementById('mama-nombre').value.trim(),fecha:document.getElementById('mama-fecha').value,role:'mama'},
+    papa:{nombre:document.getElementById('papa-nombre').value.trim(),fecha:document.getElementById('papa-fecha').value,role:'papa'},
+    bebe:{nombre:bn,genero:document.getElementById('bebe-genero').value,fecha:document.getElementById('bebe-fecha').value,role:'bebe'}
+  };
+  A.profile = p;
+  localStorage.setItem('lac_p', JSON.stringify(p));
+  try {
+    const gid = await window._createGroup({...p.mama,role:'mama'});
+    document.getElementById('group-code').textContent = gid.slice(-8).toUpperCase();
+    renderMembers([p.mama, p.bebe]);
+  } catch(e) { console.error(e); }
+  await reqNotif();
+  goTo('home'); updateHome();
+  showToast('Grupo familiar creado');
+}
+async function joinGrp() {
+  const n=document.getElementById('join-nombre').value.trim(), r=document.getElementById('join-rol').value, c=document.getElementById('join-code').value.trim();
+  if(!n||!c){showToast('Completá todos los campos');return;}
+  try {
+    const mp={nombre:n,role:r};
+    const gid = await window._joinGroup(c,mp);
+    A.profile={mama:mp,papa:{},bebe:{nombre:'—'},joinedAs:r};
+    localStorage.setItem('lac_p',JSON.stringify(A.profile));
+    document.getElementById('group-code').textContent = gid.slice(-8).toUpperCase();
+    await reqNotif();
+    goTo('home'); updateHome();
+    showToast('Te uniste al grupo familiar');
+  } catch(e){ showToast('Código inválido'); }
+}
+
+// ── HOME ──────────────────────────────────────────────────────────
+function updateHome() {
+  if(!A.profile) return;
+  document.getElementById('home-baby').textContent = A.profile.bebe?.nombre||'—';
+  const today=new Date().toDateString();
+  document.getElementById('s-today').textContent = A.feeds.filter(f=>new Date(f.start).toDateString()===today).length;
+  document.getElementById('s-total').textContent = A.feeds.length;
+  if(A.feeds.length>0){
+    const avg=Math.round(A.feeds.reduce((a,f)=>a+f.durationMin,0)/A.feeds.length);
+    document.getElementById('s-avg').textContent=avg;
+    const last=A.feeds[0], next=new Date(new Date(last.end).getTime()+A.interval*3600000);
+    document.getElementById('nc-time').textContent=fmt(next);
+    const diff=next-Date.now();
+    document.getElementById('nc-since').textContent = diff>0 ? `en ${Math.floor(diff/3600000)>0?Math.floor(diff/3600000)+'h ':''}${Math.floor((diff%3600000)/60000)} min` : '¡Es hora de la toma!';
+    schedNotif();
+  }
+}
+function renderMembers(ms) {
+  const bar=document.getElementById('members-bar');
+  const ico={mama:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--l600)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/><path d="M12 15v5M9.5 18h5"/></svg>`,papa:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--l600)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>`,bebe:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--l600)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="9" r="4"/><path d="M4 21v-1a8 8 0 0116 0v1"/></svg>`};
+  bar.innerHTML=ms.map(m=>`<div class="mpill"><div class="mavatar">${ico[m.role]||ico.papa}</div>${m.nombre}</div>`).join('');
+}
+
+// ── FEED ──────────────────────────────────────────────────────────
+function startFeed() {
+  A.cur={start:new Date()};A.ext=[15];
+  ['m15','me1','me2'].forEach(id=>document.getElementById(id).classList.remove('hit'));
+  updExt(); clearInterval(A.timerInt); A.timerInt=setInterval(tick,1000);
+  goTo('feed');
+}
+function tick() {
+  if(!A.cur) return;
+  const e=Math.floor((Date.now()-A.cur.start)/1000), m=Math.floor(e/60), s=e%60;
+  document.getElementById('t-digits').textContent=pad(m)+':'+pad(s);
+  const tgt=A.ext[A.ext.length-1]*60, pct=Math.min(e/tgt,1);
+  document.getElementById('t-arc').style.strokeDashoffset=565.5*(1-pct);
+  const mins=e/60;
+  if(mins>=15&&!document.getElementById('m15').classList.contains('hit')){document.getElementById('m15').classList.add('hit');if(document.getElementById('tog-end').checked)showBanner('end');}
+  if(A.ext[1]&&mins>=A.ext[1]&&!document.getElementById('me1').classList.contains('hit'))document.getElementById('me1').classList.add('hit');
+  if(A.ext[2]&&mins>=A.ext[2]&&!document.getElementById('me2').classList.contains('hit'))document.getElementById('me2').classList.add('hit');
+  const ph=document.getElementById('t-phase');
+  if(mins<5) ph.innerHTML=`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> Iniciando...`;
+  else if(mins<10) ph.innerHTML=`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> Buen progreso`;
+  else if(mins<15) ph.innerHTML=`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> Casi al mínimo`;
+  else ph.innerHTML=`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Mínimo alcanzado`;
+}
+function extendFeed(m){const l=A.ext[A.ext.length-1];A.ext.push(l+m);updExt();document.getElementById('t-arc').style.strokeDashoffset=565.5;showToast(`Extendido a ${l+m} minutos`);}
+function updExt(){document.getElementById('me1-t').textContent=A.ext[1]?`${A.ext[1]} min`:'— min';document.getElementById('me2-t').textContent=A.ext[2]?`${A.ext[2]} min`:'— min';}
+function openFinish(){
+  const e=Math.floor((Date.now()-A.cur.start)/1000),m=Math.floor(e/60),s=e%60;
+  document.getElementById('msum').innerHTML=`<div class="msi"><div class="msv">${fmt(A.cur.start)}</div><div class="msl">Inicio</div></div><div class="msi"><div class="msv">${fmt(new Date())}</div><div class="msl">Fin</div></div><div class="msi"><div class="msv">${pad(m)}:${pad(s)}</div><div class="msl">Duración</div></div>`;
+  document.getElementById('modal-finish').classList.add('open');
+}
+function closeFinish(){document.getElementById('modal-finish').classList.remove('open');}
+async function saveFeed(){
+  const end=new Date(), dur=Math.round((end-A.cur.start)/60000);
+  const feed={start:A.cur.start.toISOString(),end:end.toISOString(),durationMin:dur,obs:document.getElementById('obs').value.trim(),extensions:[...A.ext]};
+  clearInterval(A.timerInt); A.cur=null; document.getElementById('obs').value=''; closeFinish();
+  try { await window._saveFeed(feed); } catch(e){ A.feeds.unshift(feed); localStorage.setItem('lac_f',JSON.stringify(A.feeds)); updateHome(); }
+  goTo('home'); showToast(`Toma guardada — ${dur} min`);
+}
+function confirmStop(){if(confirm('¿Abandonar el registro actual?')){clearInterval(A.timerInt);A.cur=null;goTo('home');}}
+
+// ── HISTORY ───────────────────────────────────────────────────────
+function renderHist(f){
+  const lst=document.getElementById('hist-list');
+  let feeds=[...A.feeds];
+  const now=new Date();
+  if(f==='today')feeds=feeds.filter(x=>new Date(x.start).toDateString()===now.toDateString());
+  else if(f==='week'){const w=new Date(now-7*86400000);feeds=feeds.filter(x=>new Date(x.start)>=w);}
+  else if(f==='month'){const mo=new Date(now-30*86400000);feeds=feeds.filter(x=>new Date(x.start)>=mo);}
+  if(!feeds.length){lst.innerHTML=`<div class="empty"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="var(--l300)" stroke-width="1.5" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><div class="empty-t">Sin registros</div><div class="empty-s">No hay tomas en este período</div></div>`;return;}
+  lst.innerHTML=feeds.map(x=>{const st=new Date(x.start),en=new Date(x.end),dl=st.toLocaleDateString('es-AR',{weekday:'long',day:'numeric',month:'short'});return`<div class="hcard"><div class="hcard-top"><div class="hdate">${dl}</div><div class="dur-badge">${x.durationMin} min</div></div><div class="htimes"><div class="htb"><div class="htv">${fmt(st)}</div><div class="htl">Inicio</div></div><div class="htsep">→</div><div class="htb"><div class="htv">${fmt(en)}</div><div class="htl">Fin</div></div></div>${x.obs?`<div class="hobs">"${x.obs}"</div>`:''}</div>`;}).join('');
+}
+function flt(f,el){document.querySelectorAll('.chip').forEach(c=>c.classList.remove('on'));el.classList.add('on');renderHist(f);}
+
+// ── REPORTS ───────────────────────────────────────────────────────
+function renderReports(){
+  const ri=document.getElementById('report-inner');
+  if(A.feeds.length<2){ri.innerHTML=`<div class="empty"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="var(--l300)" stroke-width="1.5" stroke-linecap="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg><div class="empty-t">Sin datos aún</div><div class="empty-s">Registrá al menos 2 tomas</div></div>`;return;}
+  const tot=A.feeds.length,avg=Math.round(A.feeds.reduce((a,f)=>a+f.durationMin,0)/tot),mx=Math.max(...A.feeds.map(f=>f.durationMin)),mn=Math.min(...A.feeds.map(f=>f.durationMin));
+  const l7=[],dl=[],now=new Date();
+  for(let i=6;i>=0;i--){const d=new Date(now-i*86400000);l7.push(A.feeds.filter(f=>new Date(f.start).toDateString()===d.toDateString()).length);dl.push(d.toLocaleDateString('es-AR',{weekday:'short'}));}
+  const l10=[...A.feeds].reverse().slice(-10),hc=new Array(24).fill(0);
+  A.feeds.forEach(f=>hc[new Date(f.start).getHours()]++);
+  ri.innerHTML=`<div class="sec-lbl">Resumen general</div><div class="insight-grid"><div class="ins"><div class="ins-v">${avg}<span class="ins-u"> min</span></div><div class="ins-l">Prom. duración</div></div><div class="ins"><div class="ins-v">${tot}</div><div class="ins-l">Total tomas</div></div><div class="ins"><div class="ins-v">${mx}<span class="ins-u"> min</span></div><div class="ins-l">Más larga</div></div><div class="ins"><div class="ins-v">${mn}<span class="ins-u"> min</span></div><div class="ins-l">Más corta</div></div></div><div class="sec-lbl">Tomas por día — últimos 7 días</div><div class="chart-card"><canvas id="ch1" height="150"></canvas></div><div class="sec-lbl">Duración de últimas tomas</div><div class="chart-card"><canvas id="ch2" height="150"></canvas></div><div class="sec-lbl">Distribución horaria</div><div class="chart-card"><canvas id="ch3" height="150"></canvas></div><button class="export-btn" onclick="exportCSV()"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Exportar historial (.csv)</button>`;
+  const o={responsive:true,plugins:{legend:{display:false}},scales:{x:{grid:{color:'rgba(139,92,246,.07)'},ticks:{color:'#9480b8',font:{family:'Poppins',size:11}}},y:{grid:{color:'rgba(139,92,246,.07)'},ticks:{color:'#9480b8',font:{family:'Poppins',size:11},stepSize:1},beginAtZero:true}}};
+  const lila='rgba(139,92,246,.75)',la='rgba(139,92,246,.15)';
+  new Chart(document.getElementById('ch1'),{type:'bar',data:{labels:dl,datasets:[{data:l7,backgroundColor:lila,borderRadius:8,borderSkipped:false}]},options:o});
+  new Chart(document.getElementById('ch2'),{type:'line',data:{labels:l10.map((_,i)=>`#${i+1}`),datasets:[{data:l10.map(f=>f.durationMin),borderColor:lila,backgroundColor:la,fill:true,tension:.4,pointBackgroundColor:lila,pointRadius:5}]},options:o});
+  new Chart(document.getElementById('ch3'),{type:'bar',data:{labels:Array.from({length:24},(_,i)=>i+'h'),datasets:[{data:hc,backgroundColor:lila,borderRadius:6,borderSkipped:false}]},options:o});
+}
+
+// ── NOTIFICATIONS ─────────────────────────────────────────────────
+async function reqNotif(){if(!('Notification'in window))return;if(Notification.permission==='granted'){A.notifPerm='granted';return;}A.notifPerm=await Notification.requestPermission();}
+function toggleNotif(el){A.notif=el.checked;if(A.notif){reqNotif();schedNotif();showToast('Notificaciones activadas');}else{clearTimeout(A.notifT);showToast('Desactivadas');}savePrefs();}
+function setInt(h,el){A.interval=h;document.querySelectorAll('.int-btn').forEach(b=>b.classList.remove('sel'));el.classList.add('sel');schedNotif();savePrefs();}
+function savePrefs(){localStorage.setItem('lac_pr',JSON.stringify({interval:A.interval,notif:A.notif}));}
+function schedNotif(){if(!A.notif||!A.feeds.length)return;clearTimeout(A.notifT);const last=A.feeds[0],next=new Date(new Date(last.end).getTime()+A.interval*3600000),d=next-Date.now();if(d>0)A.notifT=setTimeout(fireNotif,d);}
+function fireNotif(){
+  showBanner('start');
+  if(A.notifPerm==='granted'){
+    try{navigator.serviceWorker?.ready.then(sw=>sw.showNotification('Hora de la toma',{body:`${A.profile?.bebe?.nombre||'El bebé'} podría tener hambre`,actions:[{action:'snooze',title:'Recordar 10 min'},{action:'start',title:'Iniciar toma'}],icon:'/icon-192.png',tag:'feed-start'}));}catch(e){}
+  }
+}
+function showBanner(type){
+  const b=document.getElementById('notif-banner'),t=document.getElementById('nb-t'),bd=document.getElementById('nb-b'),ac=document.getElementById('nb-acts');
+  if(type==='start'){t.textContent='Hora de la toma';bd.textContent=`${A.profile?.bebe?.nombre||'El bebé'} podría tener hambre`;ac.innerHTML=`<button class="nb-btn" onclick="snooze()">Recordar 10 min</button><button class="nb-btn p" onclick="startFromBanner()">Iniciar toma</button>`;}
+  else{t.textContent='Mínimo alcanzado';bd.textContent='15 min cumplidos. ¿Continuamos?';ac.innerHTML=`<button class="nb-btn" onclick="extFromBanner()">Extender 10 min</button><button class="nb-btn p" onclick="finishFromBanner()">Finalizar</button>`;}
+  b.classList.add('show');clearTimeout(A.bannerT);A.bannerT=setTimeout(()=>b.classList.remove('show'),12000);
+}
+function snooze(){document.getElementById('notif-banner').classList.remove('show');setTimeout(fireNotif,10*60*1000);showToast('Recordatorio en 10 minutos');}
+function startFromBanner(){document.getElementById('notif-banner').classList.remove('show');startFeed();}
+function extFromBanner(){document.getElementById('notif-banner').classList.remove('show');extendFeed(10);}
+function finishFromBanner(){document.getElementById('notif-banner').classList.remove('show');openFinish();}
+function copyCode(){const c=document.getElementById('group-code').textContent;navigator.clipboard?.writeText(c).then(()=>showToast('Código copiado')).catch(()=>showToast('Código: '+c));}
+
+// ── EXPORT ────────────────────────────────────────────────────────
+function exportCSV(){if(!A.feeds.length){showToast('Sin tomas para exportar');return;}const rows=[['ID','Inicio','Fin','Duración (min)','Observaciones']];A.feeds.forEach(f=>rows.push([f.id||'',new Date(f.start).toLocaleString('es-AR'),new Date(f.end).toLocaleString('es-AR'),f.durationMin,f.obs||'']));const csv=rows.map(r=>r.map(c=>`"${c}"`).join(',')).join('\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8;'}));a.download=`lactancia_${new Date().toISOString().split('T')[0]}.csv`;a.click();showToast('Exportado');}
+
+// ── UTILS ─────────────────────────────────────────────────────────
+function fmt(d){return new Date(d).toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});}
+function pad(n){return String(n).padStart(2,'0');}
+function showToast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(A.toastT);A.toastT=setTimeout(()=>t.classList.remove('show'),2800);}
+
+if('serviceWorker'in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+</body>
+</html>
